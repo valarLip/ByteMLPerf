@@ -41,3 +41,16 @@ def load_dataset(config: Dict[str, Any]) -> Dataset:
     data_loader = getattr(data_loader, 'DataLoader')
     dataset = data_loader(config)
     return dataset
+
+def get_accuracy_checker(dataset_name: str):
+    """
+    Load Accuracy Checker
+    Args: str
+
+    Returns: AccuracyChecker()
+    """
+    AccuracyChecker = importlib.import_module('byte_mlperf.datasets.' +
+                                                dataset_name +
+                                                ".test_accuracy")
+    AccuracyChecker = getattr(AccuracyChecker, 'AccuracyChecker')
+    return AccuracyChecker()

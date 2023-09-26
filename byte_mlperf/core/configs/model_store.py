@@ -20,27 +20,21 @@ from typing import Any, List, Dict
 log = logging.getLogger("ModelStore")
 
 
-def load_config(tasks: List[str]) -> List[Dict[str, Any]]:
+def load_model_config(model_name: str) -> Dict[str, Any]:
     """
-    Return a list of dictionary with model Configuration
+    Return the dictionary with model Configuration
 
     Args: List[str]
 
-    Returns: List[dic]
+    Returns: dic
     """
-    log.info("Loading {} Models".format(len(tasks)))
+    log.info("Loading Model Info: {}".format(model_name))
 
-    configs_result = []
-
-    modules_dir = os.path.dirname(__file__)
-    for file in os.listdir(modules_dir):
-        path = os.path.join(modules_dir, file)
-        if (not file.startswith('_') and not file.startswith('.')
-                and (file.endswith('.json') or os.path.isdir(path))
-                and (not tasks or file[:file.find('.json')] in tasks)):
-            module_name = file
-            with open("configs/" + module_name, 'r') as file:
-                config_dict = json.load(file)
-            configs_result.append(config_dict)
-
-    return configs_result
+    with open("byte_mlperf/model_zoo/" + model_name + '.json',
+                  'r') as file:
+            model_info = json.load(file)
+        return model_info
+    else:
+        log.error(
+            "Model name: [ {} ] was not found, please check your task name".
+            format(model_info))

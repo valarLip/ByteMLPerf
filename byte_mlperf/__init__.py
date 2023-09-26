@@ -3,6 +3,8 @@ from packaging.version import parse
 
 from .version import __version__
 
+from .core import instance
+
 def digit_version(version_str: str, length: int = 4):
     """Convert a version string into a tuple of integers.
 
@@ -50,4 +52,4 @@ assert (python_version >= digit_version(python3_minimum_version)), \
     f'PYTHON=={sys.version[:5]} is used but incompatible. ' \
     f'Please install python>={python3_minimum_version}.'
 
-__all__ = ['__version__']
+__all__ = ['__version__', 'instance']
