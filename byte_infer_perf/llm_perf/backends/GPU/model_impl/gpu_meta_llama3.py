@@ -26,11 +26,44 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
     ):
         super().__init__(prefix, model, mp_size, mp_rank, ckpt_path)
 
+    def get_concat_dim(self, weight_name: str) -> int:
+        """
+        Get the concat dimension according different weight name.
+
+        Args:
+            weight_name: the weight name
+        
+        Returns:
+            the dimension to concat (-1 means no need to concat)
+        """
+        if (weight_name.endswith('.attention.wq.weight')
+            or weight_name.endswith('.attention.wk.weight')
+            or weight_name.endswith('.attention.wv.weight')
+            or weight_name.endswith('.feed_forward.w1.weight')
+            or weight_name.endswith('.feed_forward.w3.weight')
+            or weight_name == "tok_embeddings.weight"
+            or weight_name == "output.weight"):
+            return 0
+        elif (weight_name.endswith('.attention.wo.weight')
+              or weight_name.endswith('.feed_forward.w2.weight')):
+            return 1
+        return -1
+
     def parallel_loader(self):
         self.state_dict = None
         if self.mp_rank == 0:
             self.state_dict = self.torch_load_wrapper(
                 self.ckpt_path, map_location=torch.device("cpu"))
+            for weight_name, weights in self.state_dict.items():
+                concat_dim = self.get_concat_dim(weight_name)
+                if concat_dim == -1:
+                    assert all(weight == weights[0] for weight in weights[1:])
+                    self.state_dict[weight_name] = weights[0]
+                else:
+                    self.state_dict[weight_name] = torch.cat(weights, dim=concat_dim)
+
+
+
 
         if self.mp_size == 1:
             return self.state_dict
@@ -39,29 +72,27 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
         # broadcast state_dict from rank 0 to other ranks
         self.broadcast_meta()
 
-        # not finished, need to specify
-        raise NotImplementedError
-        self.broadcast_weight("transformer.embedding.word_embeddings.weight")
-        # self.broadcast_weight("transformer.output_layer.weight")
-        # self.broadcast_weight("transformer.rotary_pos_emb.inv_freq")
-        # self.broadcast_weight("transformer.encoder.final_layernorm.weight")
+        # TODO: not finished, need to specify
+        # self.scatter_weight("tok_embeddings.weight", dim=0)
+        # self.scatter_weight("output.weight", dim = 0)
 
-        # for i, block in enumerate(self.model.transformer.encoder.layers):
-        #     self.broadcast_weight(f"transformer.encoder.layers.{i}.input_layernorm.weight")
-        #     self.broadcast_weight(f"transformer.encoder.layers.{i}.post_attention_layernorm.weight")
+        for i in range(self.n_layers):
+            self.broadcast_weight(f"layers.{i}.attention_norm.weight")
+            self.broadcast_weight(f"layers.{i}.ffn_norm.weight")
 
-        #     self.scatter_weight(f"transformer.encoder.layers.{i}.mlp.dense_h_to_4h.weight", dim=0, split_mode='with_outter', outter=2)
-        #     self.scatter_weight(f"transformer.encoder.layers.{i}.mlp.dense_4h_to_h.weight", dim=-1)
-            
-        #     self.scatter_weight(f"transformer.encoder.layers.{i}.self_attention.query_key_value.weight", dim=0, split_mode='split_outter', outter=[32, 2, 2])
-        #     self.scatter_weight(f"transformer.encoder.layers.{i}.self_attention.query_key_value.bias", dim=0, split_mode='split_outter', outter=[32, 2, 2])
-    
-        #     self.scatter_weight(f"transformer.encoder.layers.{i}.self_attention.dense.weight", dim=-1)
+            # self.scatter_weight(f"layers.{i}.attention.wq.weight", dim=0)
+            # self.scatter_weight(f"layers.{i}.attention.wk.weight", dim=0)
+            # self.scatter_weight(f"layers.{i}.attention.wv.weight", dim=0)
+            # self.scatter_weight(f"layers.{i}.attention.wo.weight", dim=1)
+
+            # self.scatter_weight(f"layers.{i}.feed_forward.w1.weight", dim=0)
+            # self.scatter_weight(f"layers.{i}.feed_forward.w3.weight", dim=0)
+            # self.scatter_weight(f"layers.{i}.feed_forward.w2.weight", dim=1)
 
         return self.state_dict
 
     def infusion_to_model(self):
-        # not finished, need to specify
+        # TODO: not finished, need to specify
         raise NotImplementedError
         # self.model.transformer.embedding.word_embeddings.weight = self.to_parameter(
         #     self.state_dict[f"transformer.embedding.word_embeddings.weight"]
