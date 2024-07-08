@@ -204,19 +204,29 @@ class CoreCkptLoader(ABC):
                     if not (file.stem.startswith('pytorch_model-') and file.suffix.endswith('.bin')):
                         continue
                     file_list.append(file)
+                file_list.sort()
+
+                # load the torch weight seperately
+                for file in file_list:
+                    state_dict.update(torch.load(file, map_location=map_location))
             elif model_path.joinpath("checklist.chk").exists():
                 for file in model_path.iterdir():
                     if not (file.stem.startswith('consolidated') and file.suffix.endswith('.pth')):
                         continue
                     file_list.append(file)
+                file_list.sort()
+
+                # load the torch weight into arrays
+                for file in file_list:
+                    weight = torch.load(file, map_location=map_location)
+                    for key, value in weight.items():
+                        if key not in state_dict:
+                            state_dict[key] = []
+                        state_dict[key].append(value)
+
             else:
                 logger.error(f"The model weight type is not supported")
                 raise RuntimeError("invalid model weight")
-            file_list.sort()
-
-            # load the torch weight
-            for file in file_list:
-                state_dict.update(torch.load(file, map_location=map_location))
 
         logger.info(f"RANK{self.mp_rank} load {ckpt_path} cost: {time.time() - st}s")
 
