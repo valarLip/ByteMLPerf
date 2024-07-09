@@ -102,26 +102,26 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
             self.state_dict[f"norm.weight"]
         )
         for i, block in enumerate(self.model.layers):
-            block.attention.wq = self.to_parameter(
+            block.attention.wq.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.attention.wq.weight"]
             )
-            block.attention.wk = self.to_parameter(
+            block.attention.wk.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.attention.wk.weight"]
             )
-            block.attention.wv = self.to_parameter(
+            block.attention.wv.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.attention.wv.weight"]
             )
-            block.attention.wo = self.to_parameter(
+            block.attention.wo.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.attention.wo.weight"]
             )
 
-            block.feed_forward.w1 = self.to_parameter(
+            block.feed_forward.w1.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.feed_forward.w1.weight"]
             )
-            block.feed_forward.w2 = self.to_parameter(
+            block.feed_forward.w2.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.feed_forward.w2.weight"]
             )
-            block.feed_forward.w3 = self.to_parameter(
+            block.feed_forward.w3.weight = self.to_parameter(
                 self.state_dict[f"layers.{i}.feed_forward.w3.weight"]
             )
 
@@ -212,19 +212,10 @@ class GPUMetaLlama3(nn.Module):
         return kv_cache
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
-        # TODO: implement the self.transformer_mode.forward
-        raise NotImplemented
-        # model_outputs = self.transformer_model.forward(
-        #     **inputs, 
-        #     past_key_values=self.kv_cache, 
-        #     use_cache=True, 
-        #     output_attentions=False, 
-        #     output_hidden_states=False, 
-        #     return_dict=True, 
-        #     return_last_logit=(not inputs["get_input_logits"])
-        #     tokens= kwargs["input_ids"]
-        # )
+        logits = self.transformer_model.forward(
+            **inputs
+        )
         output_dict = {
-            "logits": model_outputs.logits
+            "logits": logits
         }
         return output_dict
