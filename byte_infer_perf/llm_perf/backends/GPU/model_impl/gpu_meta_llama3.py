@@ -73,66 +73,27 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
         self.broadcast_meta()
 
         # TODO: not finished, need to specify
-        # self.scatter_weight("tok_embeddings.weight", dim=0)
-        # self.scatter_weight("output.weight", dim = 0)
+        self.broadcast_weight(f"norm.weight")
+        self.scatter_weight("tok_embeddings.weight", dim=0)
+        self.scatter_weight("output.weight", dim = 0)
 
-        for i in range(self.n_layers):
+        for i in range(self.model.n_layers):
             self.broadcast_weight(f"layers.{i}.attention_norm.weight")
             self.broadcast_weight(f"layers.{i}.ffn_norm.weight")
 
-            # self.scatter_weight(f"layers.{i}.attention.wq.weight", dim=0)
-            # self.scatter_weight(f"layers.{i}.attention.wk.weight", dim=0)
-            # self.scatter_weight(f"layers.{i}.attention.wv.weight", dim=0)
-            # self.scatter_weight(f"layers.{i}.attention.wo.weight", dim=1)
+            self.scatter_weight(f"layers.{i}.attention.wq.weight", dim=0)
+            self.scatter_weight(f"layers.{i}.attention.wk.weight", dim=0)
+            self.scatter_weight(f"layers.{i}.attention.wv.weight", dim=0)
+            self.scatter_weight(f"layers.{i}.attention.wo.weight", dim=1)
 
-            # self.scatter_weight(f"layers.{i}.feed_forward.w1.weight", dim=0)
-            # self.scatter_weight(f"layers.{i}.feed_forward.w3.weight", dim=0)
-            # self.scatter_weight(f"layers.{i}.feed_forward.w2.weight", dim=1)
+            self.scatter_weight(f"layers.{i}.feed_forward.w1.weight", dim=0)
+            self.scatter_weight(f"layers.{i}.feed_forward.w3.weight", dim=0)
+            self.scatter_weight(f"layers.{i}.feed_forward.w2.weight", dim=1)
 
         return self.state_dict
 
     def infusion_to_model(self):
-        # TODO: not finished, need to specify
-        raise NotImplementedError
-        # self.model.transformer.embedding.word_embeddings.weight = self.to_parameter(
-        #     self.state_dict[f"transformer.embedding.word_embeddings.weight"]
-        # )
-        # self.model.transformer.output_layer.weight = self.to_parameter(
-        #     self.state_dict[f"transformer.output_layer.weight"]
-        # )
-        # self.model.transformer.rotary_pos_emb.inv_freq = self.to_parameter(
-        #     self.state_dict[f"transformer.rotary_pos_emb.inv_freq"]
-        # )
-        # self.model.transformer.encoder.final_layernorm.weight = self.to_parameter(
-        #     self.state_dict[f"transformer.encoder.final_layernorm.weight"]
-        # )
-
-        # for i, block in enumerate(self.model.transformer.encoder.layers):
-        #     block.input_layernorm.weight = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.input_layernorm.weight"]
-        #     )
-
-        #     block.mlp.dense_4h_to_h.weight = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.mlp.dense_4h_to_h.weight"]
-        #     )
-        #     block.mlp.dense_h_to_4h.weight = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.mlp.dense_h_to_4h.weight"]
-        #     )
-
-        #     block.post_attention_layernorm.weight = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.post_attention_layernorm.weight"]
-        #     )
-
-        #     block.self_attention.dense.weight = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.self_attention.dense.weight"]
-        #     )
-        #     block.self_attention.query_key_value.bias = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.self_attention.query_key_value.bias"]
-        #     )
-        #     block.self_attention.query_key_value.weight = self.to_parameter(
-        #         self.state_dict[f"transformer.encoder.layers.{i}.self_attention.query_key_value.weight"]
-        #     )
-
+        self.model.load_state_dict(self.state_dict)
         return self.model
 
 
@@ -170,20 +131,27 @@ class GPUMetaLlama3(nn.Module):
             check_dist()
             
         check_memory_usage("Begin")
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model init begin")
 
         with init_empty_weights():
             self.transformer_model = Transformer(self.llama3_config)
             self.transformer_model.eval()
-        
+
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model init end")
         check_memory_usage("After build model")
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model load weight begin")
 
         self.load_weight(self.model_path)
 
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model load weight end")
         check_memory_usage("After load_weight")
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model to device begin")
 
         self.transformer_model.half().cuda()
 
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model to device end")
         check_memory_usage("After model to device")
+        logger.info(f"{self.local_rank}: gpu_meta_llama3 model init kv_cache begin")
 
         self.kv_cache = self.init_kvcache(torch.float16)
 
