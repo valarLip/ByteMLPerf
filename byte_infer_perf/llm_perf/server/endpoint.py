@@ -3,6 +3,7 @@ import json
 import pathlib
 import asyncio
 import importlib
+from pathlib import Path
 from typing import Any, AsyncIterable, Dict, Iterable
 
 from transformers import AutoTokenizer, PreTrainedTokenizer
@@ -23,12 +24,22 @@ class LLMPerfEndpoint:
         
         # load tokenizer
         tokenizer_path = model_config["tokenizer"]["path"]
+        with open(Path(tokenizer_path).joinpath("tokenizer_config.json"), "r") as tokenizer_config_file:
+            tokenizer_config = json.load(tokenizer_config_file)
+        use_auto_tokenizer = "auto_tokenizer" not in tokenizer_config or tokenizer_config["auto_tokenizer"] == True
         self.add_sep_token = model_config["tokenizer"]["add_sep_token"]
-        self.tokenizer : PreTrainedTokenizer = AutoTokenizer.from_pretrained(
-            pretrained_model_name_or_path=tokenizer_path, 
-            local_files_only=True,
-            trust_remote_code=True
-        )
+        
+        if use_auto_tokenizer:
+            self.tokenizer : PreTrainedTokenizer = AutoTokenizer.from_pretrained(
+                pretrained_model_name_or_path=tokenizer_path, 
+                local_files_only=True,
+                trust_remote_code=True
+            )
+        else:
+            tokenizer = importlib.import_module(str(Path(tokenizer_path).joinpath(tokenizer_config["tokenizer_file"])).replace('/', '.'))
+            logger.info(f"import tokenizer: {tokenizer}")
+            tokenizer_class = getattr(tokenizer, tokenizer_config["tokenizer_class"])
+            self.tokenizer = tokenizer_class(str(Path(tokenizer_path).joinpath("tokenizer.model")))
         logger.info(f'load tokenizer: {tokenizer_path}')
         logger.info(f'pad_token_id: {self.tokenizer.pad_token_id}')
         logger.info(f'eos_token_id: {self.tokenizer.eos_token_id}')
