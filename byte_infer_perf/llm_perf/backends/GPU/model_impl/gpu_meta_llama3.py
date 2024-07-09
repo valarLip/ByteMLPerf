@@ -57,7 +57,7 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
             for weight_name, weights in self.state_dict.items():
                 concat_dim = self.get_concat_dim(weight_name)
                 if concat_dim == -1:
-                    assert all(weight == weights[0] for weight in weights[1:])
+                    # all weight in weights should be the same
                     self.state_dict[weight_name] = weights[0]
                 else:
                     self.state_dict[weight_name] = torch.cat(weights, dim=concat_dim)
@@ -72,7 +72,6 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
         # broadcast state_dict from rank 0 to other ranks
         self.broadcast_meta()
 
-        # TODO: not finished, need to specify
         self.broadcast_weight(f"norm.weight")
         self.scatter_weight("tok_embeddings.weight", dim=0)
         self.scatter_weight("output.weight", dim = 0)
@@ -93,7 +92,46 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
         return self.state_dict
 
     def infusion_to_model(self):
-        self.model.load_state_dict(self.state_dict)
+        self.model.tok_embeddings.weight = self.to_parameter(
+            self.state_dict[f"tok_embeddings.weight"]
+        )
+        self.model.output.weight = self.to_parameter(
+            self.state_dict[f"output.weight"]
+        )
+        self.model.norm.weight = self.to_parameter(
+            self.state_dict[f"norm.weight"]
+        )
+        for i, block in enumerate(self.model.layers):
+            block.attention.wq = self.to_parameter(
+                self.state_dict[f"layers.{i}.attention.wq.weight"]
+            )
+            block.attention.wk = self.to_parameter(
+                self.state_dict[f"layers.{i}.attention.wk.weight"]
+            )
+            block.attention.wv = self.to_parameter(
+                self.state_dict[f"layers.{i}.attention.wv.weight"]
+            )
+            block.attention.wo = self.to_parameter(
+                self.state_dict[f"layers.{i}.attention.wo.weight"]
+            )
+
+            block.feed_forward.w1 = self.to_parameter(
+                self.state_dict[f"layers.{i}.feed_forward.w1.weight"]
+            )
+            block.feed_forward.w2 = self.to_parameter(
+                self.state_dict[f"layers.{i}.feed_forward.w2.weight"]
+            )
+            block.feed_forward.w3 = self.to_parameter(
+                self.state_dict[f"layers.{i}.feed_forward.w3.weight"]
+            )
+
+            block.attention_norm.weight = self.to_parameter(
+                self.state_dict[f"layers.{i}.attention_norm.weight"]
+            )
+            block.ffn_norm.weight = self.to_parameter(
+                self.state_dict[f"layers.{i}.ffn_norm.weight"]
+            )
+
         return self.model
 
 
@@ -169,11 +207,12 @@ class GPUMetaLlama3(nn.Module):
 
 
     def init_kvcache(self, dtype):
-        # TODO: do nothing, need to implement after
+        # TODO: do nothing here, need to implement after
         kv_cache = ()
         return kv_cache
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
+        # TODO: implement the self.transformer_mode.forward
         raise NotImplemented
         # model_outputs = self.transformer_model.forward(
         #     **inputs, 

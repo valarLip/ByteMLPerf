@@ -3,17 +3,15 @@
     "model_path": "llm_perf/model_zoo/sota/meta-llama-3-torch-fp16-70b",
     "model_interface": "Transformer",
     "network": {
-        "dim": 4096,
-        "n_layers": 32,
-        "n_heads": 32,
-        "n_kv_heads": null,
-        "vocab_size": -1,
-        "multiple_of": 256,
-        "ffn_dim_multiplier": null,
-        "norm_eps": 1e-5,
-        "rope_theta": 500000,
-        "max_batch_size": 32,
-        "max_seq_len": 2048
+        "dim": 8192,
+        "n_layers": 80,
+        "n_heads": 64,
+        "n_kv_heads": 8,
+        "vocab_size": 128256,
+        "multiple_of": 4096,
+        "ffn_dim_multiplier": 1.3,
+        "norm_eps": 1e-05,
+        "rope_theta": 500000.0
     },
     "tokenizer": {
         "path": "llm_perf/model_zoo/sota/meta-llama-3-torch-fp16-70b",
