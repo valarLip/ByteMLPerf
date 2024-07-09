@@ -9,3 +9,5 @@ transformers==4.33.2
 tqdm
 matplotlib
 backoff
+tiktoken
+blobfile
