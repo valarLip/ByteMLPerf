@@ -223,7 +223,15 @@ class CoreCkptLoader(ABC):
                         if key not in state_dict:
                             state_dict[key] = []
                         state_dict[key].append(value)
-
+            elif model_path.joinpath("model.safetensors.index.json").exists():
+                for file in file_list:
+                    with safe_open(
+                        file, 
+                        framework="pt", 
+                        device="cpu"
+                    ) as f:
+                        for key in f.keys():
+                            state_dict[key] = f.get_tensor(key)
             else:
                 logger.error(f"The model weight type is not supported")
                 raise RuntimeError("invalid model weight")
