@@ -120,6 +120,18 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
+def gather_from_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
+    mp_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    # all-gather: x1 is column parallelized, should be gather according to column 
+    tensor_list = [torch.empty_like(x) for _ in range(mp_size)]
+    tensor_list[local_rank] = x
+    # dist.init_process_group()
+    dist.all_gather(tensor_list, x)
+    x = torch.cat(tensor_list, dim=dim).contiguous()
+    return x
+
+
 class VocabParallelEmbedding(torch.nn.Module):
     """Embedding parallelized in the vocabulary dimension.
 
@@ -291,7 +303,10 @@ class Attention(nn.Module):
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
         output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-        return self.wo(output)
+        output = self.wo(output)
+        if self.mp_size > 1:
+            dist.all_reduce(output)
+        return output
 
 
 class FeedForward(nn.Module):
@@ -313,6 +328,9 @@ class FeedForward(nn.Module):
         self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
+        self.dim = dim
+        self.hidden_dim = hidden_dim
+
         # self.w1 = ColumnParallelLinear(
         #     dim, hidden_dim, bias=False, gather_output=False, init_method=lambda x: x
         # )
@@ -327,7 +345,21 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim // self.mp_size, bias=False)
 
     def forward(self, x):
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        # x_clone = x.clone()
+        # x = self.w1(x)
+        # # if self.mp_size > 1:
+        #     # all-gather: x1 is column parallelized, should be gather according to column 
+        #     # x = gather_from_dim(x, 2)
+        
+        # x = F.silu(x)
+        # # the x here is complete, it multiplies the column-parallelized tensor in w3
+        # x = self.w2(x * self.w3(x_clone))
+        x = self.w2(F.silu(self.w1(x)) * self.w3(x))
+        # all-reduce
+        if self.mp_size > 1:
+            dist.all_reduce(x)
+        return x
+        # return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
 class TransformerBlock(nn.Module):
