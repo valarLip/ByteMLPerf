@@ -8,6 +8,7 @@ from typing import Optional, Tuple
 
 # import fairscale.nn.model_parallel.initialize as fs_init
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 # from fairscale.nn.model_parallel.layers import (
 #     ColumnParallelLinear,
@@ -117,6 +118,68 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         .expand(bs, slen, n_kv_heads, n_rep, head_dim)
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
+
+
+class VocabParallelEmbedding(torch.nn.Module):
+    """Embedding parallelized in the vocabulary dimension.
+
+    This is mainly adapted from torch.nn.Embedding and all the default
+    values are kept.
+    Arguments:
+        num_embeddings: vocabulary size.
+        embedding_dim: size of hidden state.
+    """
+
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        padding_idx: Optional[int] = None,
+        max_norm: Optional[float] = None,
+        norm_type: float = 2.0,
+        scale_grad_by_freq: bool = False,
+        sparse: bool = False
+    ) -> None:
+        super(VocabParallelEmbedding, self).__init__()
+        # dist info 
+        self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
+        self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        # Keep the input dimensions.
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.padding_idx = padding_idx
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        self.sparse = sparse
+        self.weight = None
+        # Divide the weight matrix along the vocaburaly dimension.
+        self.num_embeddings_per_tp = self.num_embeddings // self.mp_size
+        self.vocab_start_index = self.local_rank * self.num_embeddings_per_tp
+        self.vocab_end_index = self.vocab_start_index + self.num_embeddings_per_tp - 1
+
+    def forward(self, input_: torch.Tensor) -> torch.Tensor:  # type: ignore
+        # Build the mask.
+        input_mask = (input_ < self.vocab_start_index) | (input_ >= self.vocab_end_index)
+        # Mask the input.
+        masked_input = input_.clone() - self.vocab_start_index
+        masked_input[input_mask] = 0
+        # Get the embeddings.
+        output_parallel = F.embedding(
+            masked_input,
+            self.weight,
+            self.padding_idx,
+            self.max_norm,
+            self.norm_type,
+            self.scale_grad_by_freq,
+            self.sparse,
+        )
+        # Mask the output embedding.
+        output_parallel[input_mask, :] = 0.0
+        # Reduce across all the model parallel GPUs.
+        if self.mp_size > 1:
+            dist.all_reduce(output_parallel)
+        return output_parallel
 
 
 class Attention(nn.Module):
@@ -314,9 +377,8 @@ class Transformer(nn.Module):
         # self.tok_embeddings = VocabParallelEmbedding(
         #     params.vocab_size, params.dim, init_method=lambda x: x
         # )
-        self.tok_embeddings = nn.Embedding(
-            params.vocab_size // self.mp_size,
-            params.dim
+        self.tok_embeddings = VocabParallelEmbedding(
+            params.vocab_size, params.dim
         )
 
         self.layers = torch.nn.ModuleList()
@@ -336,7 +398,7 @@ class Transformer(nn.Module):
         )
 
     @torch.inference_mode()
-    def forward(self, tokens: torch.Tensor, start_pos: int, **kwargs):
+    def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)

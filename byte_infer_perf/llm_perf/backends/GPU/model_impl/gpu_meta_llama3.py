@@ -213,7 +213,8 @@ class GPUMetaLlama3(nn.Module):
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
         logits = self.transformer_model.forward(
-            **inputs
+            tokens=inputs["input_ids"],
+            start_pos=inputs["position_ids"][0][0]
         )
         output_dict = {
             "logits": logits
