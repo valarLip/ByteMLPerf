@@ -153,7 +153,6 @@ class GPUMetaLlama3(nn.Module):
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
 
-        self.prefix = "transformer.encoder.layers"
         self.transformer_model : Transformer = None
 
     def init_inference(self):
@@ -169,27 +168,20 @@ class GPUMetaLlama3(nn.Module):
             check_dist()
             
         check_memory_usage("Begin")
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model init begin")
 
         with init_empty_weights():
             self.transformer_model = Transformer(self.llama3_config)
             self.transformer_model.eval()
 
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model init end")
         check_memory_usage("After build model")
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model load weight begin")
 
         self.load_weight(self.model_path)
 
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model load weight end")
         check_memory_usage("After load_weight")
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model to device begin")
 
         self.transformer_model.half().cuda()
 
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model to device end")
         check_memory_usage("After model to device")
-        logger.info(f"{self.local_rank}: gpu_meta_llama3 model init kv_cache begin")
 
         self.kv_cache = self.init_kvcache(torch.float16)
 
@@ -207,7 +199,7 @@ class GPUMetaLlama3(nn.Module):
 
 
     def init_kvcache(self, dtype):
-        # TODO: do nothing here, need to implement after
+        # No need to init kv cache here
         kv_cache = ()
         return kv_cache
     
