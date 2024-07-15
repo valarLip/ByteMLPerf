@@ -12,6 +12,8 @@ from accelerate import init_empty_weights
 
 from llm_perf.backends.GPU.gpu_ckpt_loader import GpuCkptLoader
 
+from .mixtral import MixtralForCausalLM, MixtralConfig
+
 class GPUMixtralLoader(GpuCkptLoader):
     def __init__(
         self, 
@@ -32,8 +34,6 @@ class GPUMixtralLoader(GpuCkptLoader):
         if self.mp_size == 1:
             return self.state_dict
 
-        raise NotImplementedError
-
         # mp_size > 2
         # broadcast state_dict from rank 0 to other ranks
 
@@ -51,6 +51,7 @@ class GPUMixtralLoader(GpuCkptLoader):
             # self.broadcast_weight(f"model.layers.{i}.self_attn.o_proj.weight")
             # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.gate.weight")
             for j in range(self.expert_num):
+                pass
                 # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w1.weight")
                 # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w2.weight")
                 # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w3.weight")
@@ -78,14 +79,14 @@ class GPUMixtral(nn.Module):
         self.model_path = self.model_config["model_path"]
         self.model_network = self.model_config["network"]
 
-        self.llama3_config = ModelArgs(**self.model_network)
+        self.mixtral_config = MixtralConfig(**self.model_network)
 
         # dist config
         self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
 
-        self.transformer_model : Transformer = None
+        self.transformer_model : MixtralForCausalLM = None
 
     def init_inference(self):
         torch.cuda.set_device(self.local_rank)
@@ -102,7 +103,7 @@ class GPUMixtral(nn.Module):
         check_memory_usage("Begin")
 
         with init_empty_weights():
-            self.transformer_model = Transformer(self.llama3_config)
+            self.transformer_model = MixtralForCausalLM(self.llama3_config)
             self.transformer_model.eval()
 
         check_memory_usage("After build model")
@@ -131,15 +132,42 @@ class GPUMixtral(nn.Module):
 
 
     def init_kvcache(self, dtype):
-        # No need to init kv cache here
-        kv_cache = ()
-        return kv_cache
+        # TODO: finish the kv cache initiating
+        max_seq_len = 4096
+        max_batch_size = self.xpu_cfg["max_batch_size"]
+        kv_head_num = self.falcon_config.num_kv_heads
+        kv_head_dim = self.falcon_config.head_dim
+        
+        kv_head_num = kv_head_num // self.mp_size if self.mp_size % kv_head_num else 1
+
+        past_key_values = ()
+        layer_num = self.falcon_config.num_hidden_layers
+        for i in range(layer_num):
+            # [max_seq_len, max_batch_size, kv_head_num, kv_head_dim]
+            key_cache = torch.zeros(
+                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
+                dtype=dtype, 
+                device='cuda'
+            )
+            value_cache = torch.zeros(
+                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
+                dtype=dtype, 
+                device='cuda'
+            )
+            past_key_values += ((key_cache, value_cache),)
+
+        return past_key_values
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
-        # TODO: finish the forwarding
-        raise NotImplementedError
-        
+        model_outputs = self.transformer_model.forward(
+            **inputs, 
+            # past_key_values=self.kv_cache, 
+            use_cache=True, 
+            output_attentions=False, 
+            output_hidden_states=False, 
+            return_dict=True
+        )
         output_dict = {
-            "logits": logits
+            "logits": model_outputs.logits
         }
         return output_dict
