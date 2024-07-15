@@ -12,6 +12,10 @@ from accelerate import init_empty_weights
 
 from llm_perf.backends.GPU.gpu_ckpt_loader import GpuCkptLoader
 
+from .falcon import FalconForCausalLM, FalconConfig
+
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 class GPUFalconLoader(GpuCkptLoader):
     def __init__(
         self, 
@@ -32,8 +36,6 @@ class GPUFalconLoader(GpuCkptLoader):
         if self.mp_size == 1:
             return self.state_dict
 
-        raise NotImplementedError
-
         # mp_size > 2
         # broadcast state_dict from rank 0 to other ranks
         self.scatter_weight("transformer.word_embeddings.weight", dim=0)
@@ -41,26 +43,66 @@ class GPUFalconLoader(GpuCkptLoader):
         self.broadcast_weight("transformer.ln_f.weight")
         self.broadcast_weight("transformer.ln_f.bias")
 
-        # TODO: layers enumeration and scatter
-        for i, block in enumerate(self.model.transformer.encoder.layers):
-            # self.scatter_weight(f"transformer.h.{i}.ln_attn.bias", dim=0)
-            # self.scatter_weight(f"transformer.h.{i}.ln_attn.weight", dim=0)
+        for i, block in enumerate(self.model.transformer.h):
+            pass
+            self.broadcast_weight(f"transformer.h.{i}.ln_attn.bias")
+            self.broadcast_weight(f"transformer.h.{i}.ln_attn.weight")
 
-            # self.scatter_weight(f"transformer.h.{i}.ln_mlp.bias", dim=0)
-            # self.scatter_weight(f"transformer.h.{i}.ln_mlp.weight", dim=0)
+            self.broadcast_weight(f"transformer.h.{i}.ln_mlp.bias")
+            self.broadcast_weight(f"transformer.h.{i}.ln_mlp.weight")
 
-            # self.scatter_weight(f"transformer.h.{i}.mlp.dense_h_to_4h.weight", dim=0, split_mode='with_outter', outter=2)
-            # self.scatter_weight(f"transformer.h.{i}.mlp.dense_4h_to_h.weight", dim=-1)
+            self.scatter_weight(f"transformer.h.{i}.mlp.dense_h_to_4h.weight", dim=0)
+            self.scatter_weight(f"transformer.h.{i}.mlp.dense_4h_to_h.weight", dim=-1)
 
-            # self.scatter_weight(f"transformer.h.{i}.self_attention.dense.weight", dim=-1)
-            # self.scatter_weight(f"transformer.h.{i}.self_attention.query_key_value.weight", dim=0)
+            self.scatter_weight(f"transformer.h.{i}.self_attention.dense.weight", dim=-1)
+            # TODO: to speciy the scatter method for query_key_value weight
+            self.scatter_weight(f"transformer.h.{i}.self_attention.query_key_value.weight", dim=0)
             
 
         return self.state_dict
 
     def infusion_to_model(self):
-        # TODO: infusion
-        raise NotImplementedError
+        self.model.lm_head.weight = self.to_parameter(
+            self.state_dict[f"lm_head.weight"]
+        )
+        self.model.transformer.word_embeddings.weight = self.to_parameter(
+            self.state_dict[f"transformer.word_embeddings.weight"]
+        )
+        self.model.transformer.ln_f.weight = self.to_parameter(
+            self.state_dict[f"transformer.ln_f.weight"]
+        )
+        self.model.transformer.ln_f.bias = self.to_parameter(
+            self.state_dict[f"transformer.ln_f.bias"]
+        )
+        for i, block in enumerate(self.model.transformer.h):
+            block.ln_attn.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_attn.weight"]
+            )
+            block.ln_attn.bias = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_attn.bias"]
+            )
+            
+            block.ln_mlp.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_mlp.weight"]
+            )
+            block.ln_mlp.bias = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_mlp.bias"]
+            )
+
+
+            block.mlp.dense_h_to_4h.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.mlp.dense_h_to_4h.weight"]
+            )
+            block.mlp.dense_4h_to_h.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.mlp.dense_4h_to_h.weight"]
+            )
+
+            block.self_attention.dense.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.self_attention.dense.weight"]
+            )
+            block.self_attention.query_key_value.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.self_attention.query_key_value.weight"]
+            )
 
         return self.model
 
@@ -76,14 +118,16 @@ class GPUFalcon(nn.Module):
         self.model_path = self.model_config["model_path"]
         self.model_network = self.model_config["network"]
 
-        self.llama3_config = ModelArgs(**self.model_network)
+        self.falcon_config = FalconConfig(**self.model_network)
 
         # dist config
         self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
 
-        self.transformer_model : Transformer = None
+        self.transformer_model : FalconForCausalLM = None
+
+        self.prefix = "transformer.h"
 
     def init_inference(self):
         torch.cuda.set_device(self.local_rank)
@@ -100,7 +144,7 @@ class GPUFalcon(nn.Module):
         check_memory_usage("Begin")
 
         with init_empty_weights():
-            self.transformer_model = Transformer(self.llama3_config)
+            self.transformer_model = FalconForCausalLM(self.falcon_config)
             self.transformer_model.eval()
 
         check_memory_usage("After build model")
@@ -129,15 +173,42 @@ class GPUFalcon(nn.Module):
 
 
     def init_kvcache(self, dtype):
-        # No need to init kv cache here
-        kv_cache = ()
-        return kv_cache
+        # TODO: finish the kv cache initiating
+        max_seq_len = 4096
+        max_batch_size = self.xpu_cfg["max_batch_size"]
+        kv_head_num = self.falcon_config.num_kv_heads
+        kv_head_dim = self.falcon_config.head_dim
+        
+        kv_head_num = kv_head_num // self.mp_size if self.mp_size % kv_head_num else 1
+
+        past_key_values = ()
+        layer_num = self.falcon_config.num_hidden_layers
+        for i in range(layer_num):
+            # [max_seq_len, max_batch_size, kv_head_num, kv_head_dim]
+            key_cache = torch.zeros(
+                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
+                dtype=dtype, 
+                device='cuda'
+            )
+            value_cache = torch.zeros(
+                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
+                dtype=dtype, 
+                device='cuda'
+            )
+            past_key_values += ((key_cache, value_cache),)
+
+        return past_key_values
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
-        # TODO: finish the forwarding
-        raise NotImplementedError
-        
+        model_outputs = self.transformer_model.forward(
+            **inputs, 
+            # past_key_values=self.kv_cache, 
+            use_cache=True, 
+            output_attentions=False, 
+            output_hidden_states=False, 
+            return_dict=True
+        )
         output_dict = {
-            "logits": logits
+            "logits": model_outputs.logits
         }
         return output_dict

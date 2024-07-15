@@ -11,6 +11,7 @@ from llm_perf.utils.logger import logger
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
+from safetensors import safe_open
 
 from typing import Union, List
 
@@ -224,6 +225,11 @@ class CoreCkptLoader(ABC):
                             state_dict[key] = []
                         state_dict[key].append(value)
             elif model_path.joinpath("model.safetensors.index.json").exists():
+                for file in model_path.iterdir():
+                    if not (file.stem.startswith('model-') and file.suffix.endswith('.safetensors')):
+                        continue
+                    file_list.append(file)
+                file_list.sort()
                 for file in file_list:
                     with safe_open(
                         file, 
