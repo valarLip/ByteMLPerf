@@ -38,6 +38,8 @@ class GPUFalconLoader(GpuCkptLoader):
 
         # mp_size > 2
         # broadcast state_dict from rank 0 to other ranks
+        self.broadcast_meta()
+        
         self.scatter_weight("transformer.word_embeddings.weight", dim=0)
         self.scatter_weight("lm_head.weight", dim=0)
         self.broadcast_weight("transformer.ln_f.weight")
@@ -56,7 +58,7 @@ class GPUFalconLoader(GpuCkptLoader):
 
             self.scatter_weight(f"transformer.h.{i}.self_attention.dense.weight", dim=-1)
             # TODO: to speciy the scatter method for query_key_value weight
-            self.scatter_weight(f"transformer.h.{i}.self_attention.query_key_value.weight", dim=0)
+            self.scatter_weight(f"transformer.h.{i}.self_attention.query_key_value.weight", dim=0, split_mode='split_outter', outter=[232, 8, 8])
             
 
         return self.state_dict
@@ -174,35 +176,35 @@ class GPUFalcon(nn.Module):
 
     def init_kvcache(self, dtype):
         # TODO: finish the kv cache initiating
-        max_seq_len = 4096
-        max_batch_size = self.xpu_cfg["max_batch_size"]
-        kv_head_num = self.falcon_config.num_kv_heads
-        kv_head_dim = self.falcon_config.head_dim
+        # max_seq_len = 4096
+        # max_batch_size = self.xpu_cfg["max_batch_size"]
+        # kv_head_num = self.falcon_config.num_kv_heads
+        # kv_head_dim = self.falcon_config.head_dim
         
-        kv_head_num = kv_head_num // self.mp_size if self.mp_size % kv_head_num else 1
+        # kv_head_num = kv_head_num // self.mp_size if self.mp_size % kv_head_num else 1
 
-        past_key_values = ()
-        layer_num = self.falcon_config.num_hidden_layers
-        for i in range(layer_num):
-            # [max_seq_len, max_batch_size, kv_head_num, kv_head_dim]
-            key_cache = torch.zeros(
-                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
-                dtype=dtype, 
-                device='cuda'
-            )
-            value_cache = torch.zeros(
-                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
-                dtype=dtype, 
-                device='cuda'
-            )
-            past_key_values += ((key_cache, value_cache),)
+        # past_key_values = ()
+        # layer_num = self.falcon_config.num_hidden_layers
+        # for i in range(layer_num):
+        #     # [max_seq_len, max_batch_size, kv_head_num, kv_head_dim]
+        #     key_cache = torch.zeros(
+        #         (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
+        #         dtype=dtype, 
+        #         device='cuda'
+        #     )
+        #     value_cache = torch.zeros(
+        #         (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
+        #         dtype=dtype, 
+        #         device='cuda'
+        #     )
+        #     past_key_values += ((key_cache, value_cache),)
 
-        return past_key_values
+        return None
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
         model_outputs = self.transformer_model.forward(
             **inputs, 
-            # past_key_values=self.kv_cache, 
+            past_key_values=self.kv_cache, 
             use_cache=True, 
             output_attentions=False, 
             output_hidden_states=False, 
@@ -211,4 +213,5 @@ class GPUFalcon(nn.Module):
         output_dict = {
             "logits": model_outputs.logits
         }
+        self.kv_cahce = model_outputs.past_key_values
         return output_dict

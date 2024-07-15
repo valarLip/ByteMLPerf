@@ -241,6 +241,17 @@ class FalconConfig(PretrainedConfig):
         if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
             raise ValueError(f"`rope_scaling`'s factor field must be a float > 1, got {rope_scaling_factor}")
 
+def gather_from_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
+    mp_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    # all-gather: x1 is column parallelized, should be gather according to column 
+    tensor_list = [torch.empty_like(x) for _ in range(mp_size)]
+    tensor_list[local_rank] = x
+    # dist.init_process_group()
+    dist.all_gather(tensor_list, x)
+    x = torch.cat(tensor_list, dim=dim).contiguous()
+    return x
+
 
 # NOTE(Hesslow): Unfortunately we did not fuse matmul and bias during training, this means that there's one additional quantization to bfloat16 between the operations.
 # In order not to degrade the quality of our HF-port, we keep these characteristics in the final model.
@@ -446,9 +457,12 @@ class FalconAttention(nn.Module):
 
         self.config = config
         self.hidden_size = config.hidden_size
+        self.hidden_size_per_tp = self.hidden_size // self.mp_size
         # q's heads
         self.num_heads = config.num_attention_heads
+        self.num_heads_per_tp = self.num_heads // self.mp_size
         self.head_dim = self.hidden_size // self.num_heads
+        self.head_dim_per_tp = self.hidden_size_per_tp // self.num_heads_per_tp
         self.split_size = self.hidden_size
         self.hidden_dropout = config.hidden_dropout
         self.max_position_embeddings = config.max_position_embeddings
@@ -465,22 +479,30 @@ class FalconAttention(nn.Module):
         if config.rotary:
             self._init_rope()
 
-        # Layer-wise attention scaling
-        self.inv_norm_factor = 1.0 / math.sqrt(self.head_dim)
-        self.beta = self.inv_norm_factor
-        if config.new_decoder_architecture:
-            qkv_out_dim = (config.num_kv_heads * 2 + config.num_attention_heads) * self.head_dim
-        elif config.multi_query:
-            qkv_out_dim = self.hidden_size + 2 * self.head_dim
-        else:
-            qkv_out_dim = 3 * self.hidden_size
-        self.query_key_value = FalconLinear(self.hidden_size, qkv_out_dim // self.mp_size, bias=config.bias)
         self.new_decoder_architecture = config.new_decoder_architecture
         self.multi_query = config.multi_query
         self.dense = FalconLinear(self.hidden_size // self.mp_size, self.hidden_size, bias=config.bias)
         self.attention_dropout = nn.Dropout(config.attention_dropout)
         # kv heads (MQA or not MQA)
         self.num_kv_heads = config.num_kv_heads if (self.new_decoder_architecture or not self.multi_query) else 1
+        self.num_kv_heads_per_tp = self.num_kv_heads // self.mp_size if self.mp_size % self.num_kv_heads else 1
+
+        # Layer-wise attention scaling
+        self.inv_norm_factor = 1.0 / math.sqrt(self.head_dim)
+        self.beta = self.inv_norm_factor
+        if config.new_decoder_architecture:
+            qkv_out_dim = (self.num_kv_heads_per_tp * 2 + self.num_heads_per_tp) * self.head_dim_per_tp
+        elif config.multi_query:
+            qkv_out_dim = self.hidden_size_per_tp + 2 * self.head_dim_per_tp
+        else:
+            qkv_out_dim = 3 * self.hidden_size_per_tp
+        self.query_key_value = FalconLinear(self.hidden_size, qkv_out_dim, bias=config.bias)
+        # self.new_decoder_architecture = config.new_decoder_architecture
+        # self.multi_query = config.multi_query
+        # self.dense = FalconLinear(self.hidden_size // self.mp_size, self.hidden_size, bias=config.bias)
+        # self.attention_dropout = nn.Dropout(config.attention_dropout)
+        # # kv heads (MQA or not MQA)
+        # self.num_kv_heads = config.num_kv_heads if (self.new_decoder_architecture or not self.multi_query) else 1
 
     # Copied from transformers.models.llama.modeling_llama.LlamaAttention._init_rope with Llama->Falcon
     def _init_rope(self):
@@ -581,28 +603,22 @@ class FalconAttention(nn.Module):
         # fused_qkv's shape = [batch_size, seq_length, qkv_out_dim]
         # qkv_out_dim = (config.num_kv_heads * 2 + config.num_attention_heads) * self.head_dim in new_decoder_architecture
         fused_qkv = self.query_key_value(hidden_states)  # [batch_size, seq_length, 3 x hidden_size]
-        num_kv_heads = self.num_heads if self.new_decoder_architecture else self.num_kv_heads
+        # num_kv_heads = self.num_heads if self.new_decoder_architecture else self.num_kv_heads
+        num_kv_heads = self.num_heads_per_tp if self.new_decoder_architecture else self.num_kv_heads_per_tp
         # 3 x [batch_size, seq_length, num_heads, head_dim]
         (query_layer, key_layer, value_layer) = self._split_heads(fused_qkv)
 
         batch_size, query_length, _, _ = query_layer.shape
 
-        query_layer = query_layer.transpose(1, 2).reshape(batch_size, self.num_heads, query_length, self.head_dim)
-        key_layer = key_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim)
-        value_layer = value_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim)
+        query_layer = query_layer.transpose(1, 2).reshape(batch_size, self.num_heads_per_tp, query_length, self.head_dim_per_tp)
+        key_layer = key_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim_per_tp)
+        value_layer = value_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim_per_tp)
 
         kv_seq_len = key_layer.shape[-2]
         if layer_past is not None:
             kv_seq_len += layer_past[0].shape[-2]
         if alibi is None:
             cos, sin = self.rotary_emb(value_layer, seq_len=kv_seq_len)
-            print("query_layer", query_layer.shape)
-            print("key_layer", key_layer.shape)
-            print("cos", cos.shape)
-            print("sin", sin.shape)
-            print("cos_pos_ids", cos[position_ids].shape)
-            print("sin_pos_ids", sin[position_ids].shape)
-            print("positition_ids", position_ids)
             query_layer, key_layer = apply_rotary_pos_emb(query_layer, key_layer, cos, sin, position_ids)
 
         if layer_past is not None:
@@ -650,12 +666,13 @@ class FalconAttention(nn.Module):
                 # It is unclear why neither dropout nor head_mask is applied here (while it is with alibi).
                 attn_output = attention_scores @ value_layer
 
-            attn_output = attn_output.view(batch_size, self.num_heads, query_length, self.head_dim)
+            # attn_output = attn_output.view(batch_size, self.num_heads, query_length, self.head_dim)
+            attn_output = attn_output.view(batch_size, self.num_heads_per_tp, query_length, self.head_dim_per_tp)
             attn_output = attn_output.permute(0, 2, 1, 3)
-            attn_output = attn_output.reshape(batch_size, query_length, self.num_heads * self.head_dim)
+            # attn_output = attn_output.reshape(batch_size, query_length, self.num_heads * self.head_dim)
+            attn_output = attn_output.reshape(batch_size, query_length, self.num_heads_per_tp * self.head_dim_per_tp)
 
             attn_output = self.dense(attn_output)
-
             if output_attentions:
                 return attn_output, present, attention_scores
             else:
@@ -1005,10 +1022,10 @@ class FalconDecoderLayer(nn.Module):
             use_cache=use_cache,
             output_attentions=output_attentions,
         )
-        # if self.mp_size > 1:
-        #     dist.all_reduce(attn_outputs)
 
         attention_output = attn_outputs[0]
+        if self.mp_size > 1:
+            dist.all_reduce(attention_output)
 
         if not self.config.new_decoder_architecture:
             if self.config.parallel_attn:
@@ -1239,6 +1256,10 @@ class FalconModel(FalconPreTrainedModel):
     def __init__(self, config: FalconConfig):
         super().__init__(config)
 
+        # dist info 
+        self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
+        self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
         self.embed_dim = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.use_alibi = config.alibi
@@ -1447,8 +1468,12 @@ class FalconForCausalLM(FalconPreTrainedModel):
 
     def __init__(self, config: FalconConfig):
         super().__init__(config)
+        # dist info
+        self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
+        self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+
         self.transformer = FalconModel(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size // self.mp_size, bias=False)
 
         # Initialize weights and apply final processing
         # self.post_init()
@@ -1524,6 +1549,8 @@ class FalconForCausalLM(FalconPreTrainedModel):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
+        # TODO: for debug
+        position_ids = None
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1543,6 +1570,9 @@ class FalconForCausalLM(FalconPreTrainedModel):
         hidden_states = transformer_outputs[0]
 
         lm_logits = self.lm_head(hidden_states)
+
+        if self.mp_size > 1:
+            gather_from_dim(lm_logits, -1)
 
         loss = None
         if labels is not None:
