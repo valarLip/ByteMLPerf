@@ -1,7 +1,7 @@
 {
     "model_name": "mixtral",
     "model_path": "llm_perf/model_zoo/sota/mixtral-torch-fp16-8x22b",
-    "model_interface": "FalconForCausalLM",
+    "model_interface": "MixtralForCausalLM",
     "network": {
         "architectures": [
             "MixtralForCausalLM"
