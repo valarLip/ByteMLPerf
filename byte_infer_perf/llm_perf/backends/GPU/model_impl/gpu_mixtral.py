@@ -36,35 +36,72 @@ class GPUMixtralLoader(GpuCkptLoader):
 
         # mp_size > 2
         # broadcast state_dict from rank 0 to other ranks
-
+        self.broadcast_meta()
 
         self.scatter_weight("model.embed_tokens.weight", dim=0)
         self.scatter_weight("lm_head.weight", dim=0)
         self.broadcast_weight("model.norm.weight")
 
-        # TODO: layers enumeration and scatter
-        for i in range(self.layer_num):
+        for i, layer in enumerate(self.model.model.layers):
             pass
-            # self.broadcast_weight(f"model.layers.{i}.self_attn.q_proj.weight")
-            # self.broadcast_weight(f"model.layers.{i}.self_attn.k_proj.weight")
-            # self.broadcast_weight(f"model.layers.{i}.self_attn.v_proj.weight")
-            # self.broadcast_weight(f"model.layers.{i}.self_attn.o_proj.weight")
-            # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.gate.weight")
-            for j in range(self.expert_num):
+            self.scatter_weight(f"model.layers.{i}.self_attn.q_proj.weight", dim=0)
+            self.scatter_weight(f"model.layers.{i}.self_attn.k_proj.weight", dim=0)
+            self.scatter_weight(f"model.layers.{i}.self_attn.v_proj.weight", dim=0)
+            self.scatter_weight(f"model.layers.{i}.self_attn.o_proj.weight", dim=-1)
+            self.scatter_weight(f"model.layers.{i}.block_sparse_moe.gate.weight", dim=0)
+            for j, expert in enumerate(layer.block_sparse_moe.experts):
                 pass
-                # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w1.weight")
-                # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w2.weight")
-                # self.broadcast_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w3.weight")
-            # self.broadcast_weight(f"model.layers.{i}.input_layernorm.weight")
-            # self.broadcast_weight(f"model.layers.{i}.post_attention_layernorm.weight")
+                self.scatter_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w1.weight", dim=0)
+                self.scatter_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w2.weight", dim=-1)
+                self.scatter_weight(f"model.layers.{i}.block_sparse_moe.experts.{j}.w3.weight", dim=0)
+            self.broadcast_weight(f"model.layers.{i}.input_layernorm.weight")
+            self.broadcast_weight(f"model.layers.{i}.post_attention_layernorm.weight")
             
 
         return self.state_dict
 
     def infusion_to_model(self):
-        # TODO: infusion
-        raise NotImplementedError
-
+        self.model.lm_head.weight = self.to_parameter(
+            self.state_dict[f"lm_head.weight"]
+        )
+        self.model.model.embed_tokens.weight = self.to_parameter(
+            self.state_dict[f"model.embed_tokens.weight"]
+        )
+        self.model.model.norm.weight = self.to_parameter(
+            self.state_dict[f"model.norm.weight"]
+        )
+        for i, layer in enumerate(self.model.model.layers):
+            layer.self_attn.q_proj.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
+            )
+            layer.self_attn.k_proj.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.self_attn.k_proj.weight"]
+            )
+            layer.self_attn.v_proj.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
+            )
+            layer.self_attn.o_proj.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.self_attn.o_proj.weight"]
+            )
+            layer.block_sparse_moe.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.block_sparse_moe.gate.weight"]
+            )
+            for j, expert in enumerate(layer.block_sparse_moe.experts):
+                expert.w1.weight = self.to_parameter(
+                    self.state_dict[f"model.layers.{i}.block_sparse_moe.experts.{j}.w1.weight"]
+                )
+                expert.w2.weight = self.to_parameter(
+                    self.state_dict[f"model.layers.{i}.block_sparse_moe.experts.{j}.w2.weight"]
+                )
+                expert.w3.weight = self.to_parameter(
+                    self.state_dict[f"model.layers.{i}.block_sparse_moe.experts.{j}.w3.weight"]
+                )
+            layer.input_layernorm.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.input_layernorm.weight"]
+            )
+            layer.post_attention_layernorm.weight = self.to_parameter(
+                self.state_dict[f"model.layers.{i}.post_attention_layernorm.weight"]
+            )
         return self.model
 
 
@@ -85,7 +122,7 @@ class GPUMixtral(nn.Module):
         self.mp_size = int(os.environ.get("WORLD_SIZE", "1"))
         self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
-
+        self.prefix = "model.layers"
         self.transformer_model : MixtralForCausalLM = None
 
     def init_inference(self):
@@ -103,7 +140,7 @@ class GPUMixtral(nn.Module):
         check_memory_usage("Begin")
 
         with init_empty_weights():
-            self.transformer_model = MixtralForCausalLM(self.llama3_config)
+            self.transformer_model = MixtralForCausalLM(self.mixtral_config)
             self.transformer_model.eval()
 
         check_memory_usage("After build model")
@@ -112,6 +149,21 @@ class GPUMixtral(nn.Module):
 
         check_memory_usage("After load_weight")
 
+        # self.transformer_model.lm_head.weight.half().cuda()
+        # self.transformer_model.model.embed_tokens.weight.half().cuda()
+        # self.transformer_model.model.norm.weight.half().cuda()
+        # for i, layer in enumerate(self.transformer_model.model.layers):
+        #     layer.self_attn.q_proj.weight.half().cuda()
+        #     layer.self_attn.k_proj.weight.half().cuda()
+        #     layer.self_attn.v_proj.weight.half().cuda()
+        #     layer.self_attn.o_proj.weight.half().cuda()
+        #     layer.block_sparse_moe.weight.half().cuda()
+        #     for j, expert in enumerate(layer.block_sparse_moe.experts):
+        #         expert.w1.weight.half().cuda()
+        #         expert.w2.weight.half().cuda()
+        #         expert.w3.weight.half().cuda()
+        #     layer.input_layernorm.weight.half().cuda()
+        #     layer.post_attention_layernorm.weight.half().cuda()
         self.transformer_model.half().cuda()
 
         check_memory_usage("After model to device")
@@ -133,30 +185,7 @@ class GPUMixtral(nn.Module):
 
     def init_kvcache(self, dtype):
         # TODO: finish the kv cache initiating
-        max_seq_len = 4096
-        max_batch_size = self.xpu_cfg["max_batch_size"]
-        kv_head_num = self.falcon_config.num_kv_heads
-        kv_head_dim = self.falcon_config.head_dim
-        
-        kv_head_num = kv_head_num // self.mp_size if self.mp_size % kv_head_num else 1
-
-        past_key_values = ()
-        layer_num = self.falcon_config.num_hidden_layers
-        for i in range(layer_num):
-            # [max_seq_len, max_batch_size, kv_head_num, kv_head_dim]
-            key_cache = torch.zeros(
-                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
-                dtype=dtype, 
-                device='cuda'
-            )
-            value_cache = torch.zeros(
-                (max_seq_len, max_batch_size, kv_head_num, kv_head_dim), 
-                dtype=dtype, 
-                device='cuda'
-            )
-            past_key_values += ((key_cache, value_cache),)
-
-        return past_key_values
+        return None
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
         model_outputs = self.transformer_model.forward(
