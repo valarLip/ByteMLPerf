@@ -47,12 +47,16 @@ class GPUFalconLoader(GpuCkptLoader):
         self.broadcast_weight("transformer.ln_f.bias")
 
         for i, block in enumerate(self.model.transformer.h):
-            pass
+            # 180b related parameter
             self.broadcast_weight(f"transformer.h.{i}.ln_attn.bias")
             self.broadcast_weight(f"transformer.h.{i}.ln_attn.weight")
 
             self.broadcast_weight(f"transformer.h.{i}.ln_mlp.bias")
             self.broadcast_weight(f"transformer.h.{i}.ln_mlp.weight")
+
+            # 7b related parameter
+            # self.broadcast_weight(f"transformer.h.{i}.input_layernorm.bias")
+            # self.broadcast_weight(f"transformer.h.{i}.input_layernorm.weight")
 
             self.scatter_weight(f"transformer.h.{i}.mlp.dense_h_to_4h.weight", dim=0)
             self.scatter_weight(f"transformer.h.{i}.mlp.dense_4h_to_h.weight", dim=-1)
@@ -78,6 +82,7 @@ class GPUFalconLoader(GpuCkptLoader):
             self.state_dict[f"transformer.ln_f.bias"]
         )
         for i, block in enumerate(self.model.transformer.h):
+            # 180b related paramter
             block.ln_attn.weight = self.to_parameter(
                 self.state_dict[f"transformer.h.{i}.ln_attn.weight"]
             )
@@ -92,6 +97,13 @@ class GPUFalconLoader(GpuCkptLoader):
                 self.state_dict[f"transformer.h.{i}.ln_mlp.bias"]
             )
 
+            # 7b related parameter
+            # block.input_layernorm.weight = self.to_parameter(
+            #     self.state_dict[f"transformer.h.{i}.input_layernorm.weight"]
+            # )
+            # block.input_layernorm.bias = self.to_parameter(
+            #     self.state_dict[f"transformer.h.{i}.input_layernorm.bias"]
+            # )
 
             block.mlp.dense_h_to_4h.weight = self.to_parameter(
                 self.state_dict[f"transformer.h.{i}.mlp.dense_h_to_4h.weight"]
@@ -120,6 +132,7 @@ class GPUFalcon(nn.Module):
         self.model_name = self.model_config["model_name"]
         self.model_path = self.model_config["model_path"]
         self.model_network = self.model_config["network"]
+        self.attention_mask = None
 
         self.falcon_config = FalconConfig(**self.model_network)
 
@@ -204,9 +217,13 @@ class GPUFalcon(nn.Module):
         return None
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
+        
+        self.attention_mask = inputs["attention_mask"] if self.attention_mask is None else torch.cat((self.attention_mask, inputs["attention_mask"]), -1)
+        del inputs["attention_mask"]
         model_outputs = self.transformer_model.forward(
             **inputs, 
             past_key_values=self.kv_cache, 
+            attention_mask=self.attention_mask,
             use_cache=True, 
             output_attentions=False, 
             output_hidden_states=False, 
@@ -215,5 +232,5 @@ class GPUFalcon(nn.Module):
         output_dict = {
             "logits": model_outputs.logits
         }
-        self.kv_cahce = model_outputs.past_key_values
+        self.kv_cache = model_outputs.past_key_values
         return output_dict

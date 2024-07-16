@@ -462,7 +462,6 @@ class FalconAttention(nn.Module):
         self.num_heads = config.num_attention_heads
         self.num_heads_per_tp = self.num_heads // self.mp_size
         self.head_dim = self.hidden_size // self.num_heads
-        self.head_dim_per_tp = self.hidden_size_per_tp // self.num_heads_per_tp
         self.split_size = self.hidden_size
         self.hidden_dropout = config.hidden_dropout
         self.max_position_embeddings = config.max_position_embeddings
@@ -491,9 +490,9 @@ class FalconAttention(nn.Module):
         self.inv_norm_factor = 1.0 / math.sqrt(self.head_dim)
         self.beta = self.inv_norm_factor
         if config.new_decoder_architecture:
-            qkv_out_dim = (self.num_kv_heads_per_tp * 2 + self.num_heads_per_tp) * self.head_dim_per_tp
+            qkv_out_dim = (self.num_kv_heads_per_tp * 2 + self.num_heads_per_tp) * self.head_dim
         elif config.multi_query:
-            qkv_out_dim = self.hidden_size_per_tp + 2 * self.head_dim_per_tp
+            qkv_out_dim = self.hidden_size_per_tp + 2 * self.head_dim
         else:
             qkv_out_dim = 3 * self.hidden_size_per_tp
         self.query_key_value = FalconLinear(self.hidden_size, qkv_out_dim, bias=config.bias)
@@ -610,9 +609,9 @@ class FalconAttention(nn.Module):
 
         batch_size, query_length, _, _ = query_layer.shape
 
-        query_layer = query_layer.transpose(1, 2).reshape(batch_size, self.num_heads_per_tp, query_length, self.head_dim_per_tp)
-        key_layer = key_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim_per_tp)
-        value_layer = value_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim_per_tp)
+        query_layer = query_layer.transpose(1, 2).reshape(batch_size, self.num_heads_per_tp, query_length, self.head_dim)
+        key_layer = key_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim)
+        value_layer = value_layer.transpose(1, 2).reshape(batch_size, num_kv_heads, query_length, self.head_dim)
 
         kv_seq_len = key_layer.shape[-2]
         if layer_past is not None:
@@ -667,10 +666,10 @@ class FalconAttention(nn.Module):
                 attn_output = attention_scores @ value_layer
 
             # attn_output = attn_output.view(batch_size, self.num_heads, query_length, self.head_dim)
-            attn_output = attn_output.view(batch_size, self.num_heads_per_tp, query_length, self.head_dim_per_tp)
+            attn_output = attn_output.view(batch_size, self.num_heads_per_tp, query_length, self.head_dim)
             attn_output = attn_output.permute(0, 2, 1, 3)
             # attn_output = attn_output.reshape(batch_size, query_length, self.num_heads * self.head_dim)
-            attn_output = attn_output.reshape(batch_size, query_length, self.num_heads_per_tp * self.head_dim_per_tp)
+            attn_output = attn_output.reshape(batch_size, query_length, self.num_heads_per_tp * self.head_dim)
 
             attn_output = self.dense(attn_output)
             if output_attentions:
@@ -1342,7 +1341,6 @@ class FalconModel(FalconPreTrainedModel):
         past_key_values_length = 0
         if past_key_values[0] is not None:
             past_key_values_length = past_key_values[0][0].shape[-2]
-
         if self.use_alibi:
             mask = (
                 torch.ones(
@@ -1404,7 +1402,6 @@ class FalconModel(FalconPreTrainedModel):
             attention_mask = _prepare_4d_causal_attention_mask(
                 attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
             )
-
         # Prepare head mask if needed
         # 1.0 in head_mask indicate we keep the head
         # attention_probs has shape batch_size x num_heads x N x N
@@ -1553,7 +1550,6 @@ class FalconForCausalLM(FalconPreTrainedModel):
         position_ids = None
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
         transformer_outputs = self.transformer(
             input_ids,
             past_key_values=past_key_values,
