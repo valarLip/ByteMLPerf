@@ -9,6 +9,7 @@ from llm_perf.utils.ps_utils import check_memory_usage
 from llm_perf.utils.dist_utils import check_dist
 
 from accelerate import init_empty_weights
+from datetime import timedelta
 
 from llm_perf.backends.GPU.gpu_ckpt_loader import GpuCkptLoader
 
@@ -139,7 +140,8 @@ class GPUFalcon(nn.Module):
             dist.init_process_group(
                 backend="nccl", 
                 world_size=self.mp_size, 
-                rank=self.local_rank
+                rank=self.local_rank,
+                timeout=timedelta(seconds=7200000)
             )
             check_dist()
             
