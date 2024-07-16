@@ -139,9 +139,8 @@ class GPUMixtral(nn.Module):
             
         check_memory_usage("Begin")
 
-        with init_empty_weights():
-            self.transformer_model = MixtralForCausalLM(self.mixtral_config)
-            self.transformer_model.eval()
+        self.transformer_model = MixtralForCausalLM(self.mixtral_config)
+        self.transformer_model.eval()
 
         check_memory_usage("After build model")
 

@@ -360,7 +360,6 @@ class VocabParallelEmbedding(torch.nn.Module):
         masked_input = input_.clone() - self.vocab_start_index
         masked_input[input_mask] = 0
         # Get the embeddings.
-        print("here", self.weight.device)
         output_parallel = F.embedding(
             masked_input,
             self.weight,
@@ -513,7 +512,6 @@ class MixtralAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_heads_per_tp = self.num_key_value_heads // self.mp_size
         self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.num_key_value_groups_per_tp = self.num_key_value_groups // self.mp_size
         self.max_position_embeddings = config.max_position_embeddings
         self.rope_theta = config.rope_theta
         self.is_causal = True
@@ -580,8 +578,8 @@ class MixtralAttention(nn.Module):
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # repeat k/v heads if n_kv_heads < n_heads
-        key_states = repeat_kv(key_states, self.num_key_value_groups_per_tp)
-        value_states = repeat_kv(value_states, self.num_key_value_groups_per_tp)
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
 
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
@@ -1584,7 +1582,7 @@ class MixtralForCausalLM(MixtralPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-
+        position_ids = None
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_router_logits = (
             output_router_logits if output_router_logits is not None else self.config.output_router_logits
