@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from safetensors import safe_open
 
 from typing import Union, List
+from threading import Lock
 
 class CoreCkptLoader(ABC):
     def __init__(
@@ -207,9 +208,15 @@ class CoreCkptLoader(ABC):
                     file_list.append(file)
                 file_list.sort()
 
+                lock = Lock()            
+
+                def load_task(file: pathlib.Path, lock: Lock):
+                    weight = torch.load(file, map_location=map_location)
+                    with lock:
+                        state_dict.update(weight)
                 # load the torch weight seperately
-                for file in file_list:
-                    state_dict.update(torch.load(file, map_location=map_location))
+                with ThreadPoolExecutor() as executor:
+                    executor.map(load_task, file_list, [lock] * len(file_list))
             elif model_path.joinpath("checklist.chk").exists():
                 for file in model_path.iterdir():
                     if not (file.stem.startswith('consolidated') and file.suffix.endswith('.pth')):
@@ -217,27 +224,40 @@ class CoreCkptLoader(ABC):
                     file_list.append(file)
                 file_list.sort()
 
-                # load the torch weight into arrays
-                for file in file_list:
+                lock = Lock()
+
+                def load_task(file: pathlib.Path, lock: Lock):
                     weight = torch.load(file, map_location=map_location)
-                    for key, value in weight.items():
-                        if key not in state_dict:
-                            state_dict[key] = []
-                        state_dict[key].append(value)
+                    with lock:
+                        for key, value in weight.items():
+                            if key not in state_dict:
+                                state_dict[key] = []
+                            state_dict[key].append(value)
+
+                # load the torch weight into arrays
+                with ThreadPoolExecutor() as executor:
+                    executor.map(load_task, file_list, [lock] * len(file_list))
             elif model_path.joinpath("model.safetensors.index.json").exists():
                 for file in model_path.iterdir():
                     if not (file.stem.startswith('model-') and file.suffix.endswith('.safetensors')):
                         continue
                     file_list.append(file)
                 file_list.sort()
-                for file in file_list:
+
+                lock = Lock()
+
+                def load_task(file: pathlib.Path, lock: Lock):
                     with safe_open(
                         file, 
                         framework="pt", 
                         device="cpu"
                     ) as f:
                         for key in f.keys():
-                            state_dict[key] = f.get_tensor(key)
+                            with lock:
+                                state_dict[key] = f.get_tensor(key)
+                
+                with ThreadPoolExecutor() as executor:
+                    executor.map(load_task, file_list, [lock] * len(file_list))
             else:
                 logger.error(f"The model weight type is not supported")
                 raise RuntimeError("invalid model weight")
