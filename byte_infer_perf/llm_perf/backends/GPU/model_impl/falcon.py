@@ -14,12 +14,14 @@
 # limitations under the License.
 """PyTorch Falcon model."""
 
-import math
+import torch
+import torch.distributed as dist
 import os
+import math
+import warnings
 from typing import TYPE_CHECKING, Optional, Tuple, Union
 
 import torch
-import torch.distributed as dist
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, LayerNorm, MSELoss
@@ -49,8 +51,8 @@ from transformers.utils import (
 )
 from transformers.configuration_utils import PretrainedConfig
 
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
+if TYPE_CHECKING:
+    from transformers.configuration_utils import PretrainedConfig
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -758,7 +760,16 @@ class FalconFlashAttention2(FalconAttention):
         head_mask: Optional[torch.Tensor] = None,
         use_cache: bool = False,
         output_attentions: bool = False,
+        **kwargs,
     ):
+        if "padding_mask" in kwargs:
+            warnings.warn(
+                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
+            )
+
+            # overwrite attention_mask with padding_mask
+            attention_mask = kwargs.pop("padding_mask")
+
         fused_qkv = self.query_key_value(hidden_states)  # [batch_size, seq_length, 3 x hidden_size]
         num_kv_heads = self.num_heads if self.new_decoder_architecture else self.num_kv_heads
         # 3 x [batch_size, seq_length, num_heads, head_dim]
@@ -950,6 +961,8 @@ class FalconMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.act(self.dense_h_to_4h(x))
         x = self.dense_4h_to_h(x)
+        if self.mp_size > 1:
+            dist.all_reduce(x)
         return x
 
 
@@ -1046,8 +1059,6 @@ class FalconDecoderLayer(nn.Module):
 
         # MLP.
         mlp_output = self.mlp(mlp_layernorm_out)
-        if self.mp_size > 1:
-            dist.all_reduce(mlp_output)
 
         if self.config.new_decoder_architecture or self.config.parallel_attn:
             mlp_output += attention_output
@@ -1546,10 +1557,9 @@ class FalconForCausalLM(FalconPreTrainedModel):
             `labels = input_ids` Indices are selected in `[-100, 0, ..., config.vocab_size]` All labels set to `-100`
             are ignored (masked), the loss is only computed for labels in `[0, ..., config.vocab_size]`
         """
-        # TODO: for debug
-        position_ids = None
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
         transformer_outputs = self.transformer(
             input_ids,
             past_key_values=past_key_values,

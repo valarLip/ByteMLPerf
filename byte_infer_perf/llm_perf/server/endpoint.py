@@ -21,13 +21,13 @@ class LLMPerfEndpoint:
         
         model_config = xpu_cfg["model_config"]
         hardware_type = xpu_cfg["hardware_type"]
-        
+    
         # load tokenizer
         tokenizer_path = model_config["tokenizer"]["path"]
         with open(Path(tokenizer_path).joinpath("tokenizer_config.json"), "r") as tokenizer_config_file:
             tokenizer_config = json.load(tokenizer_config_file)
         use_auto_tokenizer = "auto_tokenizer" not in tokenizer_config or tokenizer_config["auto_tokenizer"] == True
-        self.add_sep_token = model_config["tokenizer"]["add_sep_token"]
+        self.add_sep_token = model_config["tokenizer"].get("add_sep_token", False)
         
         if use_auto_tokenizer:
             self.tokenizer : PreTrainedTokenizer = AutoTokenizer.from_pretrained(
@@ -40,10 +40,14 @@ class LLMPerfEndpoint:
             logger.info(f"import tokenizer: {tokenizer}")
             tokenizer_class = getattr(tokenizer, tokenizer_config["tokenizer_class"])
             self.tokenizer = tokenizer_class(str(Path(tokenizer_path).joinpath("tokenizer.model")))
-        logger.info(f'load tokenizer: {tokenizer_path}')
-        logger.info(f'pad_token_id: {self.tokenizer.pad_token_id}')
-        logger.info(f'eos_token_id: {self.tokenizer.eos_token_id}')
-
+        logger.info(f"load tokenizer: {tokenizer_path}")
+        logger.info("*"*50)
+        logger.info(f"bos_token_id: {self.tokenizer.bos_token_id}")
+        logger.info(f"eos_token_id: {self.tokenizer.eos_token_id}")
+        logger.info(f"pad_token_id: {self.tokenizer.pad_token_id}")
+        logger.info(f"sep_token_id: {self.tokenizer.sep_token_id}")
+        logger.info("*"*50)
+        
         xpu_cfg["pad_token_id"] = self.tokenizer.pad_token_id
 
         # import setup according to hardware_type
@@ -58,8 +62,11 @@ class LLMPerfEndpoint:
 
         self.warmup(xpu_cfg["max_batch_size"])
 
+
     def __del__(self):
-        self.scheduler.stop()
+        if hasattr(self, "scheduler") and self.scheduler is not None:
+            self.scheduler.stop()
+
 
     def warmup(self, max_batch_size):
         prompt = "中国的首都是哪里？"
