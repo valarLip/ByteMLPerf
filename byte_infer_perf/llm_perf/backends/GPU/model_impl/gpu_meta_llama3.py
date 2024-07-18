@@ -202,9 +202,31 @@ class GPUMetaLlama3(nn.Module):
 
 
     def init_kvcache(self, dtype):
-        # No need to init kv cache here
-        kv_cache = ()
-        return kv_cache
+        # llama3 model already has its own kvcache
+        # max_seq_len = self.llama3_config.max_seq_len
+        # max_batch_size = self.llama3_config.max_batch_size
+        # n_heads = self.llama3_config.n_heads
+        # head_dim = self.llama3_config.dim // n_heads
+        
+        # n_local_heads = n_heads // self.mp_size if self.mp_size % n_heads else 1
+
+        # past_key_values = ()
+        # layer_num = self.llama3_config.n_layers
+        # for i in range(layer_num):
+        #     # [max_batch_size, max_seq_len, kv_head_num, kv_head_dim]
+        #     key_cache = torch.zeros(
+        #         (max_batch_size, max_seq_len, n_local_heads, head_dim), 
+        #         dtype=dtype, 
+        #         device='cuda'
+        #     )
+        #     value_cache = torch.zeros(
+        #         (max_batch_size, max_seq_len, n_local_heads, head_dim), 
+        #         dtype=dtype, 
+        #         device='cuda'
+        #     )
+        #     past_key_values += ((key_cache, value_cache),)
+
+        return None
     
     def forward(self, inputs : Dict[str, torch.Tensor]):
         logits = self.transformer_model.forward(
