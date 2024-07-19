@@ -78,17 +78,6 @@ class RMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
-def gather_from_dim(x: torch.Tensor, dim: int) -> torch.Tensor:
-    mp_size = int(os.environ.get("WORLD_SIZE", "1"))
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    # all-gather: x1 is column parallelized, should be gather according to column 
-    tensor_list = [torch.empty_like(x) for _ in range(mp_size)]
-    tensor_list[local_rank] = x
-    # dist.init_process_group()
-    dist.all_gather(tensor_list, x)
-    x = torch.cat(tensor_list, dim=dim).contiguous()
-    return x
-
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
@@ -466,5 +455,5 @@ class Transformer(nn.Module):
         h = self.norm(h)
         output = self.output(h).float()
         if self.mp_size > 1:
-            gather_from_dim(output, -1)
+            output = gather_from_dim(output, -1)
         return output

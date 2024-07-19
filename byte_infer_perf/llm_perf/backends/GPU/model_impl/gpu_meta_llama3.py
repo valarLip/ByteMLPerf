@@ -2,6 +2,7 @@ import os
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import pathlib
 
 from typing import Dict, Any
 from llm_perf.utils.logger import logger
@@ -12,6 +13,7 @@ from accelerate import init_empty_weights
 from datetime import timedelta
 
 from llm_perf.backends.GPU.gpu_ckpt_loader import GpuCkptLoader
+from llm_perf.core.ckpt_loader import CoreCkptLoader, MetaLlama3_ModelLoader
 
 from .meta_llama3 import ModelArgs, Transformer
 
@@ -51,26 +53,32 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
         return -1
 
     def parallel_loader(self):
-        self.state_dict = None
+        self.state_dict = {}
+
+        model_dir = pathlib.Path(self.ckpt_path).absolute()
+        if not model_dir.exists() or not model_dir.is_dir():
+            if self.mp_rank == 0:
+                print(f"{model_dir} not exists or is not a directory")
+            return
+        
+        # split_model_dir = model_dir.joinpath(f"TP{self.mp_size}")
+        # if not split_model_dir.exists() or not split_model_dir.is_dir():
+        #     if self.mp_rank == 0:
+        #         print(f"{split_model_dir} not exists or is not a directory, please split model first.")
+        #     return
+
+        # model_loader = MetaLlama3_ModelLoader(split_model_dir / f"device_{self.mp_rank}")
+        # self.state_dict = model_loader.load_weight()
+        
+        # debug
+        split_model_dir = model_dir.joinpath(f"TP1")
         if self.mp_rank == 0:
-            self.state_dict = self.torch_load_wrapper(
-                self.ckpt_path, map_location=torch.device("cpu"))
-            for weight_name, weights in self.state_dict.items():
-                concat_dim = self.get_concat_dim(weight_name)
-                if concat_dim == -1:
-                    # all weight in weights should be the same
-                    self.state_dict[weight_name] = weights[0]
-                else:
-                    self.state_dict[weight_name] = torch.cat(weights, dim=concat_dim)
-
-
-
+            model_loader = MetaLlama3_ModelLoader(split_model_dir / f"device_0")
+            self.state_dict = model_loader.load_weight()
 
         if self.mp_size == 1:
-            return self.state_dict
+            return
 
-        # mp_size > 2
-        # broadcast state_dict from rank 0 to other ranks
         self.broadcast_meta()
 
         self.broadcast_weight(f"norm.weight")
@@ -89,8 +97,6 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
             self.scatter_weight(f"layers.{i}.feed_forward.w1.weight", dim=0)
             self.scatter_weight(f"layers.{i}.feed_forward.w3.weight", dim=0)
             self.scatter_weight(f"layers.{i}.feed_forward.w2.weight", dim=1)
-
-        return self.state_dict
 
     def infusion_to_model(self):
         self.model.tok_embeddings.weight = self.to_parameter(
@@ -160,8 +166,8 @@ class GPUMetaLlama3(nn.Module):
     def init_inference(self):
         torch.cuda.set_device(self.local_rank)
 
+        logger.info(f"RANK: {self.local_rank} {self.mp_size} init_process_group...")
         if self.mp_size > 1:
-            logger.info(f"RANK: {self.local_rank} {self.mp_size} init_process_group...")
             dist.init_process_group(
                 backend="nccl", 
                 world_size=self.mp_size, 
@@ -197,7 +203,7 @@ class GPUMetaLlama3(nn.Module):
             self.mp_size, self.local_rank, 
             ckpt_path
         )
-        p_loader.load()
+        p_loader.parallel_loader()
         p_loader.infusion_to_model()
 
 
