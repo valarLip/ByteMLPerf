@@ -303,29 +303,26 @@ class MetaLlama3_ModelLoader():
     def __init__(
         self,
         model_dir : pathlib.Path,
-        model_config,
     ) -> None:
         # parent class
         self.model_dir = model_dir
-        self.model_config = model_config
+        print(model_dir)
 
 
     def load_weight(self):
-        self.p_bar = tqdm(total=self.file_num, desc="loading model")
-
-        if self.p_bar.n == self.file_num:
-            self.p_bar.close()
-            self.p_bar = None
-
         file_list = []
         self.weight_dict = {}
+
+        for file in self.model_dir.iterdir():
+            if not (file.stem.startswith('consolidated') and file.suffix.endswith('.pth')):
+                continue
+            file_list.append(file)
+        file_list.sort()
 
         for file in tqdm(file_list):
             weight = torch.load(file, map_location="cpu")
             for key, value in weight.items():
-                if key not in self.weight_dict:
-                    self.weight_dict[key] = []
-                self.weight_dict[key].append(value)
+                self.weight_dict[key] = value
         return self.weight_dict
 
 class Mixtral8x22B_ModelLoader(ModelLoader):
