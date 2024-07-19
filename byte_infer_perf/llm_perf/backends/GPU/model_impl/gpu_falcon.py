@@ -50,7 +50,57 @@ class GPUFalconLoader(GpuCkptLoader):
         self.state_dict = model_loader.load_weight()
 
     def infusion_to_model(self):
-        pass
+        self.model.lm_head.weight = self.to_parameter(
+            self.state_dict[f"lm_head.weight"]
+        )
+        self.model.transformer.word_embeddings.weight = self.to_parameter(
+            self.state_dict[f"transformer.word_embeddings.weight"]
+        )
+        self.model.transformer.ln_f.weight = self.to_parameter(
+            self.state_dict[f"transformer.ln_f.weight"]
+        )
+        self.model.transformer.ln_f.bias = self.to_parameter(
+            self.state_dict[f"transformer.ln_f.bias"]
+        )
+        for i, block in enumerate(self.model.transformer.h):
+            # 180b related paramter
+            block.ln_attn.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_attn.weight"]
+            )
+            block.ln_attn.bias = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_attn.bias"]
+            )
+            
+            block.ln_mlp.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_mlp.weight"]
+            )
+            block.ln_mlp.bias = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.ln_mlp.bias"]
+            )
+
+            # 7b related parameter
+            # block.input_layernorm.weight = self.to_parameter(
+            #     self.state_dict[f"transformer.h.{i}.input_layernorm.weight"]
+            # )
+            # block.input_layernorm.bias = self.to_parameter(
+            #     self.state_dict[f"transformer.h.{i}.input_layernorm.bias"]
+            # )
+
+            block.mlp.dense_h_to_4h.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.mlp.dense_h_to_4h.weight"]
+            )
+            block.mlp.dense_4h_to_h.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.mlp.dense_4h_to_h.weight"]
+            )
+
+            block.self_attention.dense.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.self_attention.dense.weight"]
+            )
+            block.self_attention.query_key_value.weight = self.to_parameter(
+                self.state_dict[f"transformer.h.{i}.self_attention.query_key_value.weight"]
+            )
+
+        return self.model
 
 
 
@@ -109,4 +159,19 @@ class GPUFalcon(nn.Module):
 
 
     def forward(self, inputs : Dict[str, torch.Tensor]):
-        pass
+        self.attention_mask = inputs["attention_mask"] if self.attention_mask is None else torch.cat((self.attention_mask, inputs["attention_mask"]), -1)
+        del inputs["attention_mask"]
+        model_outputs = self.transformer_model.forward(
+            **inputs, 
+            past_key_values=self.kv_cache, 
+            attention_mask=self.attention_mask,
+            use_cache=True, 
+            output_attentions=False, 
+            output_hidden_states=False, 
+            return_dict=True
+        )
+        output_dict = {
+            "logits": model_outputs.logits
+        }
+        self.kv_cache = model_outputs.past_key_values
+        return output_dict

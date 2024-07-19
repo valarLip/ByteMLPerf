@@ -61,42 +61,17 @@ class GPUMetaLlama3Loader(GpuCkptLoader):
                 print(f"{model_dir} not exists or is not a directory")
             return
         
-        # split_model_dir = model_dir.joinpath(f"TP{self.mp_size}")
-        # if not split_model_dir.exists() or not split_model_dir.is_dir():
-        #     if self.mp_rank == 0:
-        #         print(f"{split_model_dir} not exists or is not a directory, please split model first.")
-        #     return
-
-        # model_loader = MetaLlama3_ModelLoader(split_model_dir / f"device_{self.mp_rank}")
-        # self.state_dict = model_loader.load_weight()
-        
-        # debug
-        split_model_dir = model_dir.joinpath(f"TP1")
-        if self.mp_rank == 0:
-            model_loader = MetaLlama3_ModelLoader(split_model_dir / f"device_0")
-            self.state_dict = model_loader.load_weight()
-
-        if self.mp_size == 1:
+        split_model_dir = model_dir.joinpath(f"TP{self.mp_size}")
+        if not split_model_dir.exists() or not split_model_dir.is_dir():
+            if self.mp_rank == 0:
+                print(f"{split_model_dir} not exists or is not a directory, please split model first.")
             return
 
-        self.broadcast_meta()
-
-        self.broadcast_weight(f"norm.weight")
-        self.scatter_weight("tok_embeddings.weight", dim=0)
-        self.scatter_weight("output.weight", dim = 0)
-
-        for i in range(self.model.n_layers):
-            self.broadcast_weight(f"layers.{i}.attention_norm.weight")
-            self.broadcast_weight(f"layers.{i}.ffn_norm.weight")
-
-            self.scatter_weight(f"layers.{i}.attention.wq.weight", dim=0)
-            self.scatter_weight(f"layers.{i}.attention.wk.weight", dim=0)
-            self.scatter_weight(f"layers.{i}.attention.wv.weight", dim=0)
-            self.scatter_weight(f"layers.{i}.attention.wo.weight", dim=1)
-
-            self.scatter_weight(f"layers.{i}.feed_forward.w1.weight", dim=0)
-            self.scatter_weight(f"layers.{i}.feed_forward.w3.weight", dim=0)
-            self.scatter_weight(f"layers.{i}.feed_forward.w2.weight", dim=1)
+        model_loader = MetaLlama3_ModelLoader(split_model_dir / f"device_{self.mp_rank}")
+        self.state_dict = model_loader.load_weight()
+        
+    
+    
 
     def infusion_to_model(self):
         self.model.tok_embeddings.weight = self.to_parameter(
